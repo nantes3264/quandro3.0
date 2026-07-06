@@ -1,0 +1,7 @@
+abra o cmd e digite:
+
+
+cd C:\Users\fernando\Desktop\meu-quadro
+
+depois digite:
+netlify dev
