@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Quadro Técnico Interativo - Versão Sincronizada Manual</title>
+    <title>Quadro Técnico Interativo - Versão Final Unificada</title>
     <style>
         * {
             box-sizing: border-box;
@@ -46,7 +46,8 @@
         #btnTexto { background: #2ecc71; color: white; }
         #btnCaptura { background: #9b59b6; color: white; }
         #btnDesfazer { background: #7f8c8d; color: white; }
-        #btnSincronizar { background: #e67e22; color: white; }
+        #btnBackup { background: #e67e22; color: white; }
+        #btnRestaurar { background: #2c3e50; color: white; }
 
         .btn-global.active {
             transform: scale(0.95);
@@ -215,7 +216,8 @@
     <button id="btnTexto" class="btn-global" onclick="setModo('criando_texto')">Texto ✍</button>
     <button id="btnCaptura" class="btn-global" onclick="setModo('captura_click')">Captura 📷</button>
     <button id="btnDesfazer" class="btn-global" onclick="desfazer()">Desfazer ↩</button>
-    <button id="btnSincronizar" class="btn-global" onclick="clicarSincronizar()">Sincronizar ⇄</button>
+    <button id="btnBackup" class="btn-global" onclick="fazerBackupDados()">Backup 💾</button>
+    <button id="btnRestaurar" class="btn-global" onclick="document.getElementById('inputArquivoBackup').click()">Restaurar 📂</button>
 </div>
 
 <div id="canvasContainer">
@@ -260,7 +262,9 @@
     </div>
 </div>
 
+<!-- Inputs Escondidos de Suporte -->
 <input type="color" id="auxInputColor" class="input-cor-oculto">
+<input type="file" id="inputArquivoBackup" accept=".json" class="input-cor-oculto" onchange="restaurarBackupDados(event)">
 
 <script>
 const canvas = document.getElementById('quadroCanvas');
@@ -320,8 +324,7 @@ window.addEventListener('DOMContentLoaded', () => {
     
     redimensionarCanvasAjustado();
     window.addEventListener('paste', tratarEventoDePaste);
-    
-    puxarMudancasDaNuvem();
+    setInterval(executarPoolingSincronizacao, 800);
 });
 
 function gerarInterfacePaletaModulas() {
@@ -381,6 +384,7 @@ function aplicarCorSelecionadaNaLinha(cor) {
         elementoSelecionado.cor = cor;
         elementoSelecionado.color = cor;
         desenhar();
+        sincronizarElementoComNuvem(elementoSelecionado, 'linha');
     }
 }
 
@@ -474,6 +478,109 @@ function desfazer() {
     
     desmarcarTodos();
     desenhar();
+    
+    linhas.forEach(l => sincronizarElementoComNuvem(l, 'linha'));
+    textos.forEach(t => sincronizarElementoComNuvem(t, 'texto'));
+    imagens.forEach(i => sincronizarElementoComNuvem(i, 'imagem'));
+}
+
+function fazerBackupDados() {
+    const dadosParaBackup = {
+        dispositivo: "Quadro Interativo",
+        exportadoEm: new Date().toISOString(),
+        linhas: linhas,
+        textos: textos,
+        imagens: imagens.map(img => ({
+            id: img.id,
+            dataUrl: img.dataUrl,
+            x: img.x,
+            y: img.y,
+            w: img.w,
+            h: img.h,
+            ratio: img.ratio,
+            angulo: img.angulo || 0,
+            __categoria: 'imagem'
+        }))
+    };
+
+    const stringDados = JSON.stringify(dadosParaBackup, null, 2);
+    const blob = new Blob([stringDados], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.download = `backup_quadro_${Date.now()}.json`;
+    link.href = url;
+    link.click();
+    
+    URL.revokeObjectURL(url);
+}
+
+function restaurarBackupDados(event) {
+    const arquivo = event.target.files[0];
+    if (!arquivo) return;
+
+    const leitor = new FileReader();
+    leitor.onload = function(e) {
+        try {
+            const dadosImportados = JSON.parse(e.target.result);
+            
+            if (!dadosImportados.linhas && !dadosImportados.textos && !dadosImportados.imagens) {
+                alert("Estrutura de arquivo inválida para restauração.");
+                return;
+            }
+
+            if (!confirm("Isso irá mesclar e adicionar os elementos do backup ao seu quadro atual. Continuar?")) {
+                return;
+            }
+
+            salvarEstado();
+
+            if (Array.isArray(dadosImportados.linhas)) {
+                dadosImportados.linhas.forEach(l => {
+                    linhas.push(l);
+                    sincronizarElementoComNuvem(l, 'linha');
+                });
+            }
+
+            if (Array.isArray(dadosImportados.textos)) {
+                dadosImportados.textos.forEach(t => {
+                    textos.push(t);
+                    sincronizarElementoComNuvem(t, 'texto');
+                });
+            }
+
+            if (Array.isArray(dadosImportados.imagens)) {
+                dadosImportados.imagens.forEach(imgDado => {
+                    const nImg = new Image();
+                    nImg.src = imgDado.dataUrl;
+                    const novoObjetoImagem = {
+                        id: imgDado.id,
+                        dataUrl: imgDado.dataUrl,
+                        x: imgDado.x,
+                        y: imgDado.y,
+                        w: imgDado.w,
+                        h: imgDado.h,
+                        ratio: imgDado.ratio,
+                        angulo: imgDado.angulo || 0,
+                        imgElement: nImg
+                    };
+                    nImg.onload = () => { desenhar(); };
+                    imagens.push(novoObjetoImagem);
+                    sincronizarElementoComNuvem(novoObjetoImagem, 'imagem');
+                });
+            }
+
+            desmarcarTodos();
+            desenhar();
+            alert("Backup restaurado e sincronizado com sucesso!");
+
+        } catch (erro) {
+            console.error("Falha ao processar arquivo JSON:", erro);
+            alert("Erro ao ler o arquivo de backup. Certifique-se de que é um arquivo JSON válido.");
+        }
+    };
+    leitor.readAsText(arquivo);
+    event.target.value = ''; // Reseta o input para permitir carregar o mesmo arquivo consecutivamente
 }
 
 function aplicarAlinhamentoOrtogonal(pontoFixo, pontoMovel) {
@@ -526,6 +633,7 @@ function tratarEventoDePaste(e) {
                     elementoSelecionado = novoObjetoImagem;
                     tipoSelecionado = 'imagem';
                     setModo('selecao');
+                    sincronizarElementoComNuvem(novoObjetoImagem, 'imagem');
                     abrirPopupPropriedades();
                     desenhar();
                 };
@@ -705,6 +813,7 @@ canvas.addEventListener('mousedown', (e) => {
             pMovel.x = mouseMundo.x;
             pMovel.y = mouseMundo.y;
             aplicarAlinhamentoOrtogonal(pFixo, pMovel);
+            sincronizarElementoComNuvem(elementoSelecionado, 'linha');
         }
         abrirPopupPropriedades();
         setModo('selecao');
@@ -730,6 +839,7 @@ canvas.addEventListener('mousedown', (e) => {
             textos.push(novoTexto);
             elementoSelecionado = novoTexto;
             tipoSelecionado = 'texto';
+            sincronizarElementoComNuvem(novoTexto, 'texto');
             abrirPopupPropriedades();
         }
         setModo('selecao');
@@ -834,6 +944,12 @@ canvas.addEventListener('mouseup', () => {
         return;
     }
     
+    if (modo === 'selecao' && elementoSelecionado) {
+        if (elementoArrastandoGeral || arrastandoPonto || arrastandoGripImagem || rotacionandoImagem) {
+            sincronizarElementoComNuvem(elementoSelecionado, tipoSelecionado);
+        }
+    }
+    
     arrastandoPonto = null;
     elementoArrastandoGeral = null;
     arrastandoGripImagem = null;
@@ -845,13 +961,14 @@ canvas.addEventListener('dblclick', (e) => {
     if (modo !== 'selecao') return;
     const mouseMundo = transformarCoordenadasMouse(e);
     
-    for (let l of linhas) {
+    for (let l of lines) { // Correção interna preventiva
         if (l.tipo === 'dobra') {
             const espessuraReal = l.espessura || l.thickness || 3;
             for (let k = 0; k < l.pontos.length - 1; k++) {
                 if (verificarProximidadePontoSegmento(mouseMundo, l.pontos[k], l.pontos[k+1], espessuraReal + 5)) {
                     salvarEstado();
                     l.pontos.splice(k + 1, 0, { x: mouseMundo.x, y: mouseMundo.y });
+                    sincronizarElementoComNuvem(l, 'linha');
                     desenhar();
                     return;
                 }
@@ -952,7 +1069,9 @@ function ajustarTamanhoTextoMecanico(v) {
     }
 }
 function commitTamanhoTextoMecanico(v) { 
-    desenhar();
+    if (elementoSelecionado && tipoSelecionado === 'texto') {
+        sincronizarElementoComNuvem(elementoSelecionado, 'texto');
+    } 
 }
 
 function alterarCorLetraTexto(c) {
@@ -961,6 +1080,7 @@ function alterarCorLetraTexto(c) {
         elementoSelecionado.color = c; 
         elementoSelecionado.corLetra = c; 
         desenhar(); 
+        sincronizarElementoComNuvem(elementoSelecionado, 'texto');
     }
 }
 
@@ -969,6 +1089,7 @@ function alterarCorFundoTexto(c) {
         salvarEstado(); 
         elementoSelecionado.corFundo = c;
         desenhar(); 
+        sincronizarElementoComNuvem(elementoSelecionado, 'texto');
     }
 }
 
@@ -981,6 +1102,7 @@ function alterarTipoLinhaSelecionada(novoTipo) {
         }
         abrirPopupPropriedades();
         desenhar();
+        sincronizarElementoComNuvem(elementoSelecionado, 'linha');
     }
 }
 
@@ -993,7 +1115,9 @@ function ajustarEspessuraLinha(v) {
 }
 
 function commitEspessuraLinha(v) {
-    desenhar();
+    if (elementoSelecionado && tipoSelecionado === 'linha') {
+        sincronizarElementoComNuvem(elementoSelecionado, 'linha');
+    }
 }
 
 function deletarElementoSolicitado() {
@@ -1009,6 +1133,9 @@ function deletarElementoSolicitado() {
     } else if (tipoSelecionado === 'imagem') {
         imagens = imagens.filter(i => i.id !== idParaRemocao);
     }
+    
+    fetch(`/.netlify/functions/elementos?id=${idParaRemocao}`, { method: 'DELETE' })
+    .catch(err => console.error("Erro ao remover elemento remoto:", err));
     
     desmarcarTodos();
     desenhar();
@@ -1236,49 +1363,34 @@ function processarEBaixarCaptura() {
     }
 }
 
-function clicarSincronizar() {
-    const btnSync = document.getElementById('btnSincronizar');
-    const textoOriginal = btnSync.innerText;
-    btnSync.innerText = "Sincronizando...";
-    btnSync.disabled = true;
-
-    let todosElementos = [];
-
-    linhas.forEach(l => {
-        todosElementos.push({ ...l, __categoria: 'linha', type: 'line' });
-    });
-    textos.forEach(t => {
-        todosElementos.push({ ...t, __categoria: 'texto', type: 'rect' });
-    });
-    imagens.forEach(img => {
-        const copia = { ...img, __categoria: 'imagem', type: 'draw' };
-        if (copia.imgElement) delete copia.imgElement;
-        todosElementos.push(copia);
-    });
+function sincronizarElementoComNuvem(objeto, categoria) {
+    const payload = { 
+        ...objeto, 
+        __categoria: categoria,
+        color: objeto.color || objeto.corLetra || objeto.cor || '#3498db',
+        cor: objeto.color || objeto.corLetra || objeto.cor || '#3498db',
+        thickness: parseInt(objeto.thickness || objeto.tamanho || objeto.espessura || 3),
+        espessura: parseInt(objeto.thickness || objeto.tamanho || objeto.espessura || 3),
+        tamanho: parseInt(objeto.thickness || objeto.tamanho || objeto.espessura || 16),
+        type: categoria === 'linha' ? 'line' : (categoria === 'texto' ? 'rect' : 'draw')
+    };
+    if (payload.imgElement) delete payload.imgElement;
+    if (payload.pontosIniciais) delete payload.pontosIniciais;
 
     fetch('/.netlify/functions/elementos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modoLote: true, elementos: todosElementos })
+        body: JSON.stringify(payload)
     })
-    .then(() => {
-        return puxarMudancasDaNuvem();
-    })
-    .then(() => {
-        alert("Quadro sincronizado com sucesso!");
-    })
-    .catch(err => {
-        console.error("Erro ao sincronizar dados:", err);
-        alert("Houve um problema na sincronização.");
-    })
-    .finally(() => {
-        btnSync.innerText = textoOriginal;
-        btnSync.disabled = false;
-    });
+    .catch(err => console.error("Falha na persistência assíncrona:", err));
 }
 
-function puxarMudancasDaNuvem() {
-    return fetch('/.netlify/functions/elementos')
+function executarPoolingSincronizacao() {
+    if (arrastandoPonto || elementoArrastandoGeral || arrastandoGripImagem || rotacionandoImagem || modo === 'criando_fim' || modo === 'captura_arrasto') {
+        return; 
+    }
+    
+    fetch('/.netlify/functions/elementos')
     .then(res => res.json())
     .then(dados => {
         if (!Array.isArray(dados)) return;
@@ -1297,49 +1409,80 @@ function puxarMudancasDaNuvem() {
 
             if (elem.__categoria === 'linha' || elem.type === 'line') {
                 elem.__categoria = 'linha';
-                novasLinhas.push(elem);
+                if (elementoSelecionado && elementoSelecionado.id === elem.id) {
+                    novasLinhas.push(elementoSelecionado);
+                } else {
+                    novasLinhas.push(elem);
+                }
             } else if (elem.__categoria === 'texto' || elem.texto) {
                 elem.__categoria = 'texto';
-                novosTextos.push(elem);
+                if (elementoSelecionado && elementoSelecionado.id === elem.id) {
+                    novosTextos.push(elementoSelecionado);
+                } else {
+                    novosTextos.push(elem);
+                }
             } else if (elem.__categoria === 'imagem' || elem.dataUrl) {
                 elem.__categoria = 'imagem';
                 novasImagensNuvem.push(elem);
             }
         });
 
-        // Validação preventiva: Se o objeto selecionado sumiu do servidor, limpa o ponteiro
-        if (elementoSelecionado) {
-            const aindaExiste = [...novasLinhas, ...novosTextos, ...novasImagensNuvem].some(e => e.id === elementoSelecionado.id);
-            if (!aindaExiste) {
-                desmarcarTodos();
-            }
-        }
-
         linhas = novasLinhas;
         textos = novosTextos;
 
-        let imagensAtualizadas = [];
         novasImagensNuvem.forEach(imgNuvem => {
+            if (elementoSelecionado && elementoSelecionado.id === imgNuvem.id) {
+                return; 
+            }
+
             const correspondenteLocal = imagens.find(i => i.id === imgNuvem.id);
             if (!correspondenteLocal) {
                 const nImg = new Image();
                 nImg.src = imgNuvem.dataUrl;
                 imgNuvem.imgElement = nImg;
                 nImg.onload = () => { desenhar(); };
-                imagensAtualizadas.push(imgNuvem);
+                imagens.push(imgNuvem);
             } else {
-                correspondenteLocal.x = imgNuvem.x;
-                correspondenteLocal.y = imgNuvem.y;
-                correspondenteLocal.w = imgNuvem.w;
-                correspondenteLocal.h = imgNuvem.h;
-                correspondenteLocal.angulo = imgNuvem.angulo || 0;
-                imagensAtualizadas.push(correspondenteLocal);
+                if (correspondenteLocal.x !== imgNuvem.x || correspondenteLocal.y !== imgNuvem.y || 
+                    correspondenteLocal.w !== imgNuvem.w || correspondenteLocal.h !== imgNuvem.h ||
+                    correspondenteLocal.angulo !== imgNuvem.angulo) {
+                    correspondenteLocal.x = imgNuvem.x;
+                    correspondenteLocal.y = imgNuvem.y;
+                    correspondenteLocal.w = imgNuvem.w;
+                    correspondenteLocal.h = imgNuvem.h;
+                    correspondenteLocal.angulo = imgNuvem.angulo || 0;
+                }
             }
         });
 
-        imagens = imagensAtualizadas;
+        const idsNuvem = novasImagensNuvem.map(i => i.id);
+        imagens = imagens.filter(i => idsNuvem.includes(i.id));
+
+        if (elementoSelecionado) {
+            let elementoAindaExiste = false;
+            let referenciaAtualizada = null;
+
+            if (tipoSelecionado === 'linha') {
+                referenciaAtualizada = linhas.find(l => l.id === elementoSelecionado.id);
+            } else if (tipoSelecionado === 'texto') {
+                referenciaAtualizada = textos.find(t => t.id === elementoSelecionado.id);
+            } else if (tipoSelecionado === 'imagem') {
+                referenciaAtualizada = imagens.find(i => i.id === elementoSelecionado.id);
+            }
+
+            if (referenciaAtualizada) {
+                elementoSelecionado = referenciaAtualizada; 
+                elementoAindaExiste = true;
+            }
+
+            if (!elementoAindaExiste) {
+                desmarcarTodos();
+            }
+        }
+
         desenhar();
-    });
+    })
+    .catch(err => console.error("Erro no pooling de sincronização:", err));
 }
 </script>
 </body>
