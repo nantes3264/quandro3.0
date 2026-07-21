@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Quadro Técnico Interativo - Versão Nuvem Supabase</title>
+    <title>Quadro Técnico Interativo - Versão Incremental Supabase</title>
     <style>
         * {
             box-sizing: border-box;
@@ -226,7 +226,7 @@
     <button id="btnTexto" class="btn-global" onclick="setModo('criando_texto')">Texto ✍</button>
     <button id="btnCaptura" class="btn-global" onclick="setModo('captura_click')">Captura 📷</button>
     <button id="btnDesfazer" class="btn-global" onclick="desfazer()">Desfazer ↩</button>
-    <button id="btnSalvarNuvem" class="btn-global" onclick="salvarNoSupabase()">Salvar Nuvem 💾</button>
+    <button id="btnSalvarNuvem" class="btn-global" onclick="salvarNoSupabase()">Sincronizar ⚡</button>
     <button id="btnAtualizarNuvem" class="btn-global" onclick="carregarDoSupabase()">Atualizar 🔄</button>
     <button id="btnAlternarFundo" class="btn-global" onclick="alternarEstiloFundo()">Fundo: Grade 🌐</button>
     <button id="btnBackup" class="btn-global" onclick="fazerBackupDados()">Backup 📂</button>
@@ -301,6 +301,10 @@ let imagens = [];
 let modo = 'selecao';
 let manterFundoBrancoCompleto = false; 
 
+// --- CONTROLE DE MUDANÇAS INCREMENTAIS (DELTA) ---
+let elementosAlterados = new Map(); 
+let idsDeletados = new Set();        
+
 let historicoEstados = [];
 const LIMITE_HISTORICO = 30;
 
@@ -321,7 +325,7 @@ let indexPontoOriginal = -1;
 
 let paletaCoresMemoria = [
     '#3498db', '#e74c3c', '#2ecc71', '#f1c40f', '#9b59b6',
-    '#1abc9c', '#34495e', '#e67e22', '#2c3e50', '#7f8c8d'
+    '#1abc9c', '#3498db', '#e67e22', '#2c3e50', '#7f8c8d'
 ];
 let slotAtivoIndex = 0;
 
@@ -334,6 +338,29 @@ const RAIO_GRIP_ROTACAO = 10;
 function atualizarStatus(texto, cor) {
     statusTexto.innerText = texto;
     statusTexto.style.color = cor;
+}
+
+function marcarObjetoComoAlterado(objeto, tipo) {
+    if(!objeto || !objeto.id) return;
+    
+    // Prepara objeto limpo sem a referência HTMLImageElement para gravar na tabela
+    let objetoParaSalvar = { ...objeto };
+    if (tipo === 'imagem') {
+        delete objetoParaSalvar.imgElement;
+    }
+
+    elementosAlterados.set(objeto.id, {
+        id: objeto.id,
+        tipo: tipo,
+        conteudo: objetoParaSalvar,
+        atualizado_em: new Date().toISOString()
+    });
+}
+
+function marcarObjetoComoDeletado(idObjeto) {
+    if (!idObjeto) return;
+    elementosAlterados.delete(idObjeto);
+    idsDeletados.add(idObjeto);
 }
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -432,6 +459,7 @@ function aplicarCorSelecionadaNaLinha(cor) {
     if (elementoSelecionado && tipoSelecionado === 'linha') {
         salvarEstado();
         elementoSelecionado.cor = cor;
+        marcarObjetoComoAlterado(elementoSelecionado, 'linha');
         desenhar();
     }
 }
@@ -540,14 +568,7 @@ function desfazer() {
         const nImg = new Image();
         nImg.src = dadoImg.dataUrl;
         const objImg = {
-            id: dadoImg.id,
-            dataUrl: dadoImg.dataUrl,
-            x: dadoImg.x,
-            y: dadoImg.y,
-            w: dadoImg.w,
-            h: dadoImg.h,
-            ratio: dadoImg.ratio,
-            angulo: dadoImg.angulo || 0,
+            ...dadoImg,
             imgElement: nImg
         };
         nImg.onload = () => { desenhar(); };
@@ -560,85 +581,83 @@ function desfazer() {
 
 async function carregarDoSupabase() {
     if(!bancoSupabase) return;
-    atualizarStatus('Buscando desenho em nuvem... ⏳', '#e67e22');
+    atualizarStatus('Buscando dados no Supabase... ⏳', '#e67e22');
     
     try {
         const { data, error } = await bancoSupabase
-            .from('piloto_quadro')
-            .select('dados_json')
-            .eq('id', 1)
-            .single();
+            .from('elementos_quadro')
+            .select('*');
 
         if (error) throw error;
 
-        if (data && data.dados_json) {
-            linhas = data.dados_json.linhas || [];
-            textos = data.dados_json.textos || [];
-            
-            imagens = [];
-            if (data.dados_json.imagens) {
-                data.dados_json.imagens.forEach(imgDado => {
+        linhas = [];
+        textos = [];
+        imagens = [];
+
+        if (data && data.length > 0) {
+            data.forEach(item => {
+                const elem = item.conteudo;
+                if (item.tipo === 'linha') {
+                    linhas.push(elem);
+                } else if (item.tipo === 'texto') {
+                    textos.push(elem);
+                } else if (item.tipo === 'imagem') {
                     const nImg = new Image();
-                    nImg.src = imgDado.dataUrl;
-                    const novoObjetoImagem = {
-                        id: imgDado.id,
-                        dataUrl: imgDado.dataUrl,
-                        x: imgDado.x,
-                        y: imgDado.y,
-                        w: imgDado.w,
-                        h: imgDado.h,
-                        ratio: imgDado.ratio,
-                        angulo: imgDado.angulo || 0,
-                        imgElement: nImg
-                    };
+                    nImg.src = elem.dataUrl;
+                    const novoObjetoImagem = { ...elem, imgElement: nImg };
                     nImg.onload = () => { desenhar(); };
                     imagens.push(novoObjetoImagem);
-                });
-            }
-            
-            desmarcarTodos();
-            desenhar();
-            atualizarStatus('Sincronizado com o Supabase! 🟢', '#2ecc71');
-        } else {
-            desenhar();
-            atualizarStatus('Quadro vazio encontrado na nuvem. 🟢', '#2ecc71');
+                }
+            });
         }
+        
+        elementosAlterados.clear();
+        idsDeletados.clear();
+        
+        desmarcarTodos();
+        desenhar();
+        atualizarStatus('Sincronizado com o Supabase! 🟢', '#2ecc71');
     } catch (erro) {
-        atualizarStatus('Erro ao carregar nuvem: ' + erro.message, '#e74c3c');
+        atualizarStatus('Erro ao carregar: ' + erro.message, '#e74c3c');
         console.error(erro);
     }
 }
 
 async function salvarNoSupabase() {
     if(!bancoSupabase) return;
-    atualizarStatus('Salvando dados na nuvem... ⏳', '#e67e22');
     
-    const pacoteDados = {
-        linhas: linhas,
-        textos: textos,
-        imagens: imagens.map(img => ({
-            id: img.id,
-            dataUrl: img.dataUrl,
-            x: img.x,
-            y: img.y,
-            w: img.w,
-            h: img.h,
-            ratio: img.ratio,
-            angulo: img.angulo || 0
-        })),
-        atualizado_em: new Date().toISOString()
-    };
+    const itensParaSalvar = Array.from(elementosAlterados.values());
+    const itensParaDeletar = Array.from(idsDeletados);
+
+    if (itensParaSalvar.length === 0 && itensParaDeletar.length === 0) {
+        atualizarStatus('Nenhuma alteração pendente. 🟢', '#2ecc71');
+        return;
+    }
+
+    atualizarStatus('Sincronizando alterações... ⏳', '#e67e22');
 
     try {
-        const { error } = await bancoSupabase
-            .from('piloto_quadro')
-            .update({ dados_json: pacoteDados })
-            .eq('id', 1); 
+        if (itensParaSalvar.length > 0) {
+            const { error: errorUpsert } = await bancoSupabase
+                .from('elementos_quadro')
+                .upsert(itensParaSalvar);
+            if (errorUpsert) throw errorUpsert;
+        }
 
-        if (error) throw error;
-        atualizarStatus('Salvo com sucesso no Supabase! 💾✔️', '#2ecc71');
+        if (itensParaDeletar.length > 0) {
+            const { error: errorDelete } = await bancoSupabase
+                .from('elementos_quadro')
+                .delete()
+                .in('id', itensParaDeletar);
+            if (errorDelete) throw errorDelete;
+        }
+
+        elementosAlterados.clear();
+        idsDeletados.clear();
+
+        atualizarStatus('Alterações salvas com sucesso! ⚡', '#2ecc71');
     } catch (erro) {
-        atualizarStatus('Erro ao salvar na nuvem: ' + erro.message, '#e74c3c');
+        atualizarStatus('Erro ao salvar alterações: ' + erro.message, '#e74c3c');
         console.error(erro);
     }
 }
@@ -676,8 +695,15 @@ function restaurarBackupDados(event) {
         try {
             const dados = JSON.parse(e.target.result);
             salvarEstado();
-            if (Array.isArray(dados.linhas)) linhas = dados.linhas;
-            if (Array.isArray(dados.textos)) textos = dados.textos;
+            
+            if (Array.isArray(dados.linhas)) {
+                linhas = dados.linhas;
+                linhas.forEach(l => marcarObjetoComoAlterado(l, 'linha'));
+            }
+            if (Array.isArray(dados.textos)) {
+                textos = dados.textos;
+                textos.forEach(t => marcarObjetoComoAlterado(t, 'texto'));
+            }
             imagens = [];
             if (Array.isArray(dados.imagens)) {
                 dados.imagens.forEach(imgDado => {
@@ -686,11 +712,12 @@ function restaurarBackupDados(event) {
                     const nObj = { ...imgDado, imgElement: nImg };
                     nImg.onload = () => { desenhar(); };
                     imagens.push(nObj);
+                    marcarObjetoComoAlterado(nObj, 'imagem');
                 });
             }
             desmarcarTodos();
             desenhar();
-            atualizarStatus('Backup carregado localmente!', '#2ecc71');
+            atualizarStatus('Backup carregado! Clique em Sincronizar.', '#e67e22');
         } catch (erro) {
             alert("Erro ao ler arquivo de backup.");
         }
@@ -742,6 +769,8 @@ function tratarEventoDePaste(e) {
                         imgElement: novaImgElement
                     };
                     imagens.push(novoObjetoImagem);
+                    marcarObjetoComoAlterado(novoObjetoImagem, 'imagem');
+                    
                     elementoSelecionado = novoObjetoImagem;
                     tipoSelecionado = 'imagem';
                     setModo('selecao');
@@ -901,7 +930,6 @@ function processarDeteccaoElementos(mouseMundo) {
 }
 
 function configurarEventosMouseCanvas() {
-    // Evento de Duplo Clique para adicionar novos pontos centrais
     canvas.addEventListener('dblclick', (e) => {
         if (modo !== 'selecao') return;
         const mouseMundo = transformarCoordenadasMouse(e);
@@ -913,16 +941,15 @@ function configurarEventosMouseCanvas() {
                 const resultado = verificarProximidadePontoSegmento(mouseMundo, l.pontos[k], l.pontos[k+1], espessuraReal + 8);
                 if (resultado.proximo) {
                     salvarEstado();
-                    // Adiciona o novo ponto no meio daquele segmento correspondente
                     const novoPonto = { x: mouseMundo.x, y: mouseMundo.y };
                     l.pontos.splice(k + 1, 0, novoPonto);
-                    
-                    // Converte automaticamente para tipo "dobra" caso fosse reta simples
                     l.tipo = 'dobra'; 
                     
+                    marcarObjetoComoAlterado(l, 'linha');
+
                     elementoSelecionado = l;
                     tipoSelecionado = 'linha';
-                    arrastandoPonto = novoPonto; // Já inicia o arrasto automático do ponto criado
+                    arrastandoPonto = novoPonto;
                     indexPontoOriginal = k + 1;
                     
                     abrirPopupPropriedades();
@@ -968,6 +995,8 @@ function configurarEventosMouseCanvas() {
                 pontos: [{ x: mouseMundo.x, y: mouseMundo.y }, { x: mouseMundo.x, y: mouseMundo.y }]
             };
             linhas.push(novaLinha);
+            marcarObjetoComoAlterado(novaLinha, 'linha');
+
             elementoSelecionado = novaLinha;
             tipoSelecionado = 'linha';
             setModo('criando_fim');
@@ -981,6 +1010,7 @@ function configurarEventosMouseCanvas() {
                 pMovel.x = mouseMundo.x;
                 pMovel.y = mouseMundo.y;
                 aplicarAlinhamentoOrtogonal(pFixo, pMovel);
+                marcarObjetoComoAlterado(elementoSelecionado, 'linha');
             }
             abrirPopupPropriedades();
             setModo('selecao');
@@ -1001,6 +1031,8 @@ function configurarEventosMouseCanvas() {
                     tamanho: 16
                 };
                 textos.push(novoTexto);
+                marcarObjetoComoAlterado(novoTexto, 'texto');
+
                 elementoSelecionado = novoTexto;
                 tipoSelecionado = 'texto';
                 abrirPopupPropriedades();
@@ -1049,6 +1081,7 @@ function configurarEventosMouseCanvas() {
                 const cy = img.y + img.h / 2;
                 const anguloArctan = Math.atan2(mouseMundo.y - cy, mouseMundo.x - cx);
                 img.angulo = anguloArctan + Math.PI / 2; 
+                marcarObjetoComoAlterado(img, 'imagem');
                 desenhar();
                 return;
             }
@@ -1060,6 +1093,7 @@ function configurarEventosMouseCanvas() {
                     img.w = dx;
                     img.h = dx * img.ratio;
                 }
+                marcarObjetoComoAlterado(img, 'imagem');
                 desenhar();
                 return;
             }
@@ -1068,12 +1102,12 @@ function configurarEventosMouseCanvas() {
                 arrastandoPonto.x = mouseMundo.x;
                 arrastandoPonto.y = mouseMundo.y;
                 
-                // Aplica travamento ortogonal com o ponto vizinho imediato anterior/posterior
                 if (indexPontoOriginal > 0) {
                     aplicarAlinhamentoOrtogonal(elementoSelecionado.pontos[indexPontoOriginal - 1], arrastandoPonto);
                 } else if (indexPontoOriginal < elementoSelecionado.pontos.length - 1) {
                     aplicarAlinhamentoOrtogonal(elementoSelecionado.pontos[indexPontoOriginal + 1], arrastandoPonto);
                 }
+                marcarObjetoComoAlterado(elementoSelecionado, 'linha');
                 desenhar();
                 return;
             }
@@ -1090,6 +1124,7 @@ function configurarEventosMouseCanvas() {
                         elementoArrastandoGeral.pontos[i].y = elementoArrastandoGeral.pontosIniciais[i].y + diffY;
                     }
                 }
+                marcarObjetoComoAlterado(elementoArrastandoGeral, tipoSelecionado);
                 desenhar();
                 return;
             }
@@ -1164,6 +1199,8 @@ function alterarTipoLinhaSelecionada(novoTipo) {
         }
         document.getElementById('btnTipoReta').className = 'btn-toggle' + (novoTipo === 'reta' ? ' active' : '');
         document.getElementById('btnTipoDobra').className = 'btn-toggle' + (novoTipo === 'dobra' ? ' active' : '');
+        
+        marcarObjetoComoAlterado(elementoSelecionado, 'linha');
         desenhar();
     }
 }
@@ -1178,6 +1215,7 @@ function commitEspessuraLinha(v) {
     if (elementoSelecionado && tipoSelecionado === 'linha') {
         salvarEstado();
         elementoSelecionado.espessura = parseInt(v);
+        marcarObjetoComoAlterado(elementoSelecionado, 'linha');
     }
 }
 
@@ -1191,6 +1229,7 @@ function commitTamanhoTextoMecanico(v) {
     if (elementoSelecionado && tipoSelecionado === 'texto') {
         salvarEstado();
         elementoSelecionado.tamanho = parseInt(v);
+        marcarObjetoComoAlterado(elementoSelecionado, 'texto');
     }
 }
 
@@ -1198,6 +1237,7 @@ function alterarCorLetraTexto(c) {
     if (elementoSelecionado && tipoSelecionado === 'texto') {
         salvarEstado();
         elementoSelecionado.corLetra = c;
+        marcarObjetoComoAlterado(elementoSelecionado, 'texto');
         desenhar();
     }
 }
@@ -1206,6 +1246,7 @@ function alterarCorFundoTexto(c) {
     if (elementoSelecionado && tipoSelecionado === 'texto') {
         salvarEstado();
         elementoSelecionado.corFundo = c;
+        marcarObjetoComoAlterado(elementoSelecionado, 'texto');
         desenhar();
     }
 }
@@ -1213,6 +1254,9 @@ function alterarCorFundoTexto(c) {
 function deletarElementoSolicitado() {
     if (!elementoSelecionado) return;
     salvarEstado();
+    
+    marcarObjetoComoDeletado(elementoSelecionado.id);
+
     if (tipoSelecionado === 'linha') {
         linhas = linhas.filter(l => l.id !== elementoSelecionado.id);
     } else if (tipoSelecionado === 'texto') {
@@ -1329,7 +1373,6 @@ function desenhar() {
         if (tipoSelecionado === 'linha' && elementoSelecionado.pontos) {
             elementoSelecionado.pontos.forEach((p, idx) => {
                 ctx.beginPath();
-                // Destaca os pontos centrais/intermediários com cor diferente se preferir, ou mantém padrão branco
                 ctx.fillStyle = (idx === 0 || idx === elementoSelecionado.pontos.length - 1) ? '#ffffff' : '#f1c40f';
                 ctx.arc(p.x, p.y, 6 / zoom, 0, Math.PI * 2);
                 ctx.fill();
